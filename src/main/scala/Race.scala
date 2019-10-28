@@ -33,12 +33,18 @@ object RaceExercise extends IOApp {
   def raceToSuccess[F[_], C[_], A](ios: C[F[A]])(implicit C: Reducible[C], F: Concurrent[F]): F[A] =
     C.reduce(ios) {
       case (a, b) => {
-        val attemptA: F[Either[CompositeException, A]] =
-          a.attempt.map(_.left.map(e => CompositeException(NonEmptyList.one(e))))
-        val attemptB: F[Either[CompositeException, A]] =
-          b.attempt.map(_.left.map(e => CompositeException(NonEmptyList.one(e))))
+        //can you really avoid pattern matching inside reduce loop?
 
-        F.racePair(attemptA, attemptB).flatMap {
+        def attempt(i: F[A]): F[Either[CompositeException, A]] =
+          F.attempt(i)
+            .map(either => {
+              either.leftMap {
+                case e: CompositeException => e
+                case e                     => CompositeException(NonEmptyList.one(e))
+              }
+            })
+
+        F.racePair(attempt(a), attempt(b)).flatMap {
           case Left((Right(res), f)) => f.cancel.as(res)
           case Left((Left(error), f)) =>
             f.join.flatMap(e =>
