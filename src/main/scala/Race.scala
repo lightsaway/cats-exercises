@@ -1,3 +1,4 @@
+import cats.ApplicativeError
 import cats.effect.IOApp
 
 object RaceExercise extends IOApp {
@@ -31,15 +32,23 @@ object RaceExercise extends IOApp {
 
   def raceToSuccess[F[_], C[_], A](ios: C[F[A]])(implicit C: Reducible[C], F: Concurrent[F]): F[A] =
     C.reduce(ios) {
-      case (a, b) =>
-        F.racePair(a.attempt, b.attempt).flatMap {
+      case (a, b) => {
+        val attemptA: F[Either[CompositeException, A]] =
+          a.attempt.map(_.left.map(e => CompositeException(NonEmptyList.one(e))))
+        val attemptB: F[Either[CompositeException, A]] =
+          b.attempt.map(_.left.map(e => CompositeException(NonEmptyList.one(e))))
+
+        F.racePair(attemptA, attemptB).flatMap {
           case Left((Right(res), f)) => f.cancel.as(res)
           case Left((Left(error), f)) =>
-            f.join.flatMap(_.left.map(e => CompositeException(NonEmptyList.of(e, error))).liftTo[F])
+            f.join.flatMap(e =>
+              F.fromEither(e.left.map(er => CompositeException(er.ex ::: error.ex))))
           case Right((f, Right(res))) => f.cancel.as(res)
           case Right((f, Left(error))) =>
-            f.join.flatMap(_.left.map(e => CompositeException(NonEmptyList.of(e, error))).liftTo[F])
+            f.join.flatMap(e =>
+              F.fromEither(e.left.map(er => CompositeException(er.ex ::: error.ex))))
         }
+      }
     }
 
   // In your IOApp, you can use the following sample method list
@@ -61,6 +70,6 @@ object RaceExercise extends IOApp {
         .flatMap(a => IO(println(s"Final result is $a")))
         .handleErrorWith(err => IO(err.printStackTrace()))
 
-    oneRace.replicateA(1).as(ExitCode.Success)
+    oneRace.replicateA(5).as(ExitCode.Success)
   }
 }
