@@ -1,4 +1,4 @@
-import cats.ApplicativeError
+import cats.{ApplicativeError, NonEmptyTraverse}
 import cats.effect.IOApp
 
 object RaceExercise extends IOApp {
@@ -30,32 +30,23 @@ object RaceExercise extends IOApp {
   case class CompositeException(ex: NonEmptyList[Throwable])
       extends Exception("All race candidates have failed")
 
-  def raceToSuccess[F[_], C[_], A](ios: C[F[A]])(implicit C: Reducible[C], F: Concurrent[F]): F[A] =
-    C.reduce(ios) {
-      case (a, b) => {
-        //can you really avoid pattern matching inside reduce loop?
-
-        def attempt(i: F[A]): F[Either[CompositeException, A]] =
-          F.attempt(i)
-            .map(either => {
-              either.leftMap {
-                case e: CompositeException => e
-                case e                     => CompositeException(NonEmptyList.one(e))
-              }
-            })
-
-        F.racePair(attempt(a), attempt(b)).flatMap {
-          case Left((Right(res), f)) => f.cancel.as(res)
-          case Left((Left(error), f)) =>
-            f.join.flatMap(e =>
-              F.fromEither(e.left.map(er => CompositeException(er.ex ::: error.ex))))
-          case Right((f, Right(res))) => f.cancel.as(res)
-          case Right((f, Left(error))) =>
-            f.join.flatMap(e =>
-              F.fromEither(e.left.map(er => CompositeException(er.ex ::: error.ex))))
+  def raceToSuccess[F[_], C[_], A](ios: C[F[A]])(implicit C: NonEmptyTraverse[C],
+                                                 F: Concurrent[F]): F[A] = {
+    C.map(ios)(_.attempt.map(_.leftMap(e => CompositeException(NonEmptyList.one(e)))))
+      .reduce {
+        case (a, b) => {
+          F.racePair(a, b).flatMap {
+            case Left((Right(res), f)) => f.cancel.as(Right(res))
+            case Left((Left(error), f)) =>
+              f.join.map(e => e.left.map(er => CompositeException(er.ex ::: error.ex)))
+            case Right((f, Right(res))) => f.cancel.as(Right(res))
+            case Right((f, Left(error))) =>
+              f.join.map(e => e.left.map(er => CompositeException(er.ex ::: error.ex)))
+          }
         }
       }
-    }
+      .rethrow
+  }
 
   // In your IOApp, you can use the following sample method list
 
